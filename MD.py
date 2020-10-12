@@ -64,7 +64,7 @@ def LJ(r):
     return 4*(1/r**12 - 1/r**6)
 
 @numba.njit
-def nrg(x, sum=0):
+def nrg(x, cutoff=2.5,L=6.8, Sum=0):
     """
     Returns forces for a provided position vector 
     Input: X : Nx3 nd.array of cartersian coordinates
@@ -72,20 +72,35 @@ def nrg(x, sum=0):
     """
 
      # Total potential energy remains a scalar 
-    for i in range(len(x)-1):
-        for j in range(i+1,len(x)):
+    for i in range(0, len(x)-1):
+        for j in range(i,len(x)):
             # Iterate over two distinct particles at a time
+            if i!= j:
+                Sum+=0
+                # Difference in the X,Y,Z coordinates
+                diff = x[i] - x[j]
+                diff = periodic_boundary(diff)
+                distance = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
+                # if (distance < cutoff):
+                # # Add to total potential, current particle pair's energy contribution
+                Sum+=LJ(distance)+4*(1/cutoff**12-1/cutoff**6)
+                # else:
+                    # Sum += 0
 
-            # Difference in the X,Y,Z coordinates
-            diff = x[i] - x[j]
-            distance = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
-            # Add to total potential, current particle pair's energy contribution
-            sum+=LJ(distance)
-
-    return sum
+    return Sum
 
 @numba.njit
-def get_forces(x, force):
+def periodic_boundary(x, L=6.8):
+    for i in range(3):
+        if x[i] < L/2:
+            x[i] = x[i] + L
+        elif x[i] > L/2:
+            x[i] += x[i] - L
+        else:
+            x[i] = x[i]
+    return x
+@numba.njit
+def get_forces(x, force,cutoff,L):
     # force = np.zeros((x.shape[0],x.shape[1]))
     for i in range(0,len(x)):
         for j in range(0,len(x)):
@@ -94,26 +109,54 @@ def get_forces(x, force):
             # Difference in the X,Y,Z coordinates
                 diff = x[i] - x[j]
                 # diff = pbc(diff)
+                diff= periodic_boundary(diff,L)
                 r = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
-                
+                # if r < cutoff:
+                    
                 # 
-                # force_one = 48/(r**(13))-24**(r**(7))
-                # force[i,0]+=force_one*diff[0]/r
-                # force[i,1]+=force_one*diff[1]/r
-                # force[i,2]+=force_one*diff[2]/r
-                force[i]=force[i]+(48*diff / r**14 -24*diff/r**8)
+               
+                force[i]=force[i]+(48*diff / r**14 -24*diff/r**8)-(48/cutoff**13-24/cutoff**7)*diff/r
+                # else:
+                    # force[i] = force[i] + 0
+                
             
     return force
+@numba.njit
+def pressure_calculator(x, force, temperature=100, L = 6.8, cutoff=2.5):
+    V = L**3
+    KB = 1
+    P = len(x)*KB*temperature/V
+    
+    for i in range(0, len(x)-1):
+        for j in range(i+1, len(x)):
+            # calculate rij
+            diff = x[i] - x[j]
+                # diff = pbc(diff)
+            diff= periodic_boundary(diff,L)
+            r = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
+            # if r < cutoff:
+            P = P + 1/(3*V)*r*force[i,j]
+            # else:
+            #     P  = P + 0
+    return P
 
+@numba.njit
+def Temperature_calculate(K_eng, x):
+    KB=1
+    T = (2*K_eng)/(3*(len(x)-1)*KB)
+    return T
 # load the initial position. Replace '10.txt' with a similar file to redo calculations for a different system
 # @numba.njit
 def main():
-    cutoff = 5
+    cutoff = 2.5
     filename = '10.txt'
     curr_pos = np2.loadtxt(filename)
     K = np.array([])
     V = np.array([])
-    
+    L = 6.8
+    E = np.array([])
+    Temperature = np.array([])
+    Pressure = np.array([])
     # This function gets the elementwise gradient of total potential energy
     # with respect to each cartesian coordinate 
     
@@ -123,7 +166,11 @@ def main():
     #      dU/xn, dU/dyn, dU/dzn
     
     # Initialize velocity to zero taking size from input file
-    curr_v = np.zeros(shape=(len(curr_pos),3))
+    # curr_v = np.zeros(shape=(len(curr_pos),3))
+    
+    #Initialize velocity in random
+    curr_v = np.random.randn(len(curr_pos),3)
+    curr_v = curr_v - np.mean(curr_v)
     
     # simulation time settings
     t_min = 0
@@ -146,20 +193,35 @@ def main():
         if t != t_min:
          	momentum = np.append(momentum, [np.sum(curr_v,axis=0)],axis=0)
     #     # Equation of motions
-        # energy = nrg(curr_pos)
+        #%%
+        # Potential energy
+        energy = nrg(curr_pos)
+        # print(energy)
+        E = np.append(E,energy)
         
+        # Kinetic Energy
+        
+        #%%
         force = np.zeros((len(curr_pos),3))
-        xlr8 = get_forces(curr_pos, force) / mass 
+        xlr8 = get_forces(curr_pos, force, cutoff,L) / mass 
         
         v_temp = curr_v + 0.5 * xlr8 * t_int
         x_new = curr_pos + v_temp * t_int
         
         force = np.zeros((len(curr_pos),3))
-        new_xlr8 = get_forces(x_new,force) / mass
+        new_xlr8 = get_forces(x_new,force,cutoff,L) / mass
     
         # Update with new values
         curr_v = v_temp + 0.5 * new_xlr8 * t_int
         curr_pos = x_new
+        
+        K_eng = write_kinetic_energy(curr_v)
+        print(curr_v[0,0])
+        T = Temperature_calculate(K_eng, curr_pos)
+        P = pressure_calculator(curr_pos, force, T)
+        
+        Pressure = np.append(Pressure, P)
+        Temperature = np.append(Temperature, T)
     
     # Write the total string to a file
     write_filename = filename.split('.')[0] + '.xyz'
@@ -189,4 +251,26 @@ def main():
     plt.ylabel('Momentum (no units)')
     plt.title('Momentum variation with time')
     plt.savefig('momentum.png',dpi=300)
+    plt.cla()
+    
+    plt.plot(t_range,E)
+    plt.legend('E')
+    plt.xlabel('Time step (no units)')
+    plt.ylabel('E (no units)')
+    plt.title('E variation with time')
+    plt.savefig('E.png',dpi=300)
+    
+    plt.plot(t_range,Temperature)
+    plt.legend('Temperature')
+    plt.xlabel('Time step (no units)')
+    plt.ylabel('Temperature (K)')
+    plt.title('Temperature variation with time')
+    plt.savefig('Temperature.png',dpi=300)
+    
+    plt.plot(t_range,Pressure)
+    plt.legend('Pressure')
+    plt.xlabel('Time step (Pa)')
+    plt.ylabel('Pressure (K)')
+    plt.title('Pressure variation with time')
+    plt.savefig('Pressure.png',dpi=300)
 main()
