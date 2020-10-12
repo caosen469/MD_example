@@ -63,7 +63,7 @@ def LJ(r):
     """
     return 4*(1/r**12 - 1/r**6)
 
-@numba.njit
+@numba.njit(parallel=True)
 def nrg(x, cutoff=2.5,L=6.8, Sum=0):
     """
     Returns forces for a provided position vector 
@@ -72,62 +72,61 @@ def nrg(x, cutoff=2.5,L=6.8, Sum=0):
     """
 
      # Total potential energy remains a scalar 
-    for i in range(0, len(x)-1):
-        for j in range(i,len(x)):
+    for i in numba.prange(len(x)-1):
+        for j in range(i+1,len(x)):
             # Iterate over two distinct particles at a time
-            if i!= j:
-                Sum+=0
                 # Difference in the X,Y,Z coordinates
-                diff = x[i] - x[j]
-                diff = periodic_boundary(diff)
-                distance = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
-                # if (distance < cutoff):
+            diff = x[i] - x[j]
+            diff = periodic_boundary(diff)
+            distance = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
+            if (distance < cutoff):
                 # # Add to total potential, current particle pair's energy contribution
                 Sum+=LJ(distance)+4*(1/cutoff**12-1/cutoff**6)
-                # else:
-                    # Sum += 0
+            # Sum+=LJ(distance)
+            else:
+                Sum += 0
 
     return Sum
 
-@numba.njit
+@numba.njit(parallel=True)
 def periodic_boundary(x, L=6.8):
-    for i in range(3):
-        if x[i] < L/2:
+    for i in numba.prange(3):
+        if x[i] < -L/2:
             x[i] = x[i] + L
         elif x[i] > L/2:
             x[i] += x[i] - L
         else:
             x[i] = x[i]
     return x
-@numba.njit
+
+
+@numba.njit(parallel=True)
 def get_forces(x, force,cutoff,L):
     # force = np.zeros((x.shape[0],x.shape[1]))
-    for i in range(0,len(x)):
+    for i in numba.prange(0,len(x)):
         for j in range(0,len(x)):
         # Iterate over two distinct particles at a time
             if i != j:
             # Difference in the X,Y,Z coordinates
                 diff = x[i] - x[j]
-                # diff = pbc(diff)
                 diff= periodic_boundary(diff,L)
                 r = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
-                # if r < cutoff:
-                    
-                # 
-               
-                force[i]=force[i]+(48*diff / r**14 -24*diff/r**8)-(48/cutoff**13-24/cutoff**7)*diff/r
-                # else:
-                    # force[i] = force[i] + 0
+                if r < cutoff:
+                    force[i]=force[i]+(48*diff / r**14 -24*diff/r**8)-(48/cutoff**13-24/cutoff**7)*diff/r
+                # force[i]=force[i]+(48*diff / r**14 -24*diff/r**8)
+                else:
+                    force[i] = force[i] + 0
                 
             
     return force
-@numba.njit
+
+@numba.njit(parallel=True)
 def pressure_calculator(x, force, temperature=100, L = 6.8, cutoff=2.5):
     V = L**3
     KB = 1
     P = len(x)*KB*temperature/V
     
-    for i in range(0, len(x)-1):
+    for i in numba.prange(0, len(x)-1):
         for j in range(i+1, len(x)):
             # calculate rij
             diff = x[i] - x[j]
@@ -149,7 +148,7 @@ def Temperature_calculate(K_eng, x):
 # @numba.njit
 def main():
     cutoff = 2.5
-    filename = '10.txt'
+    filename = 'liquid256.txt'
     curr_pos = np2.loadtxt(filename)
     K = np.array([])
     V = np.array([])
@@ -166,15 +165,15 @@ def main():
     #      dU/xn, dU/dyn, dU/dzn
     
     # Initialize velocity to zero taking size from input file
-    # curr_v = np.zeros(shape=(len(curr_pos),3))
+    curr_v = np.zeros(shape=(len(curr_pos),3))
     
     #Initialize velocity in random
-    curr_v = np.random.randn(len(curr_pos),3)
-    curr_v = curr_v - np.mean(curr_v)
+    # curr_v = np.random.randn(len(curr_pos),3)
+    # curr_v = curr_v - np.mean(curr_v)
     
     # simulation time settings
     t_min = 0
-    t_max = 1
+    t_max = 15
     t_int = 0.002
     t_range = np.arange(t_min,t_max,t_int)
     mass = 1
@@ -191,7 +190,7 @@ def main():
         V = np.append(V, write_potential_energy(curr_pos))
     #     # total_string = total_string + write_positions(curr_pos)
         if t != t_min:
-         	momentum = np.append(momentum, [np.sum(curr_v,axis=0)],axis=0)
+            momentum = np.append(momentum, [np.sum(curr_v,axis=0)],axis=0)
     #     # Equation of motions
         #%%
         # Potential energy
@@ -216,8 +215,9 @@ def main():
         curr_pos = x_new
         
         K_eng = write_kinetic_energy(curr_v)
-        print(curr_v[0,0])
+        # print(curr_v[0,0])
         T = Temperature_calculate(K_eng, curr_pos)
+        # print('temperature is ', T)
         P = pressure_calculator(curr_pos, force, T)
         
         Pressure = np.append(Pressure, P)
@@ -259,18 +259,25 @@ def main():
     plt.ylabel('E (no units)')
     plt.title('E variation with time')
     plt.savefig('E.png',dpi=300)
-    
+    plt.cla()
+
     plt.plot(t_range,Temperature)
     plt.legend('Temperature')
     plt.xlabel('Time step (no units)')
     plt.ylabel('Temperature (K)')
     plt.title('Temperature variation with time')
     plt.savefig('Temperature.png',dpi=300)
-    
+    plt.cla()
+
     plt.plot(t_range,Pressure)
     plt.legend('Pressure')
     plt.xlabel('Time step (Pa)')
     plt.ylabel('Pressure (K)')
     plt.title('Pressure variation with time')
     plt.savefig('Pressure.png',dpi=300)
-main()
+    
+    return Pressure, Temperature
+import  time
+start = time.time()
+P,T = main()
+end = time.time()
