@@ -7,7 +7,7 @@ import autograd.numpy as np2
 from autograd import elementwise_grad
 import numba
 import matplotlib.pyplot as plt
-
+import math
 # -------Write current position to a cummulative string---
 # @numba.njit
 # def write_positions(pos):
@@ -28,9 +28,16 @@ import matplotlib.pyplot as plt
 
 
 # -------Write current kinetic energy to a cummulative list---
+@numba.njit(parallel=True)
+def norm(r):
+    dis = 0
+    for i in numba.prange(3):
+        dis = dis + r[i] * r[i]
+    dis = math.sqrt(dis)
+    return dis
 
-@numba.njit
-def write_kinetic_energy(v):
+@numba.njit(parallel=True)
+def write_kinetic_energy(v, m=1):
     """
     Calculates and collects the current total kinetic energy to an array
     Input: v: Nx3 nd.array of velocity vector in XYZ directions
@@ -38,14 +45,20 @@ def write_kinetic_energy(v):
     """
     # global K
     # K = np.append(K,0.5* np.sum(v**2))
-    K_now = 0.5* np.sum(v**2)
-    return K_now
+    # K_now = 0.5* np.sum(v**2)
+    k_now = 0
+    for i in numba.prange(0, len(v)):
+        one_row = v[i]
+        v_3D = norm(one_row)
+        k_now = k_now + 0.5 * m * v_3D * v_3D
+        
+    return k_now
 
 
 # -------Write current potential energy to a cummulative list---
 
 
-# @numba.njit
+@numba.njit
 def write_potential_energy(x):
     """
     Calculates and collects the current total potential energy to an array
@@ -57,32 +70,32 @@ def write_potential_energy(x):
     return nrg(x)
 
 @numba.njit
-def LJ(r):
+def LJ(r, cutoff = 2.5):
     """ Returns LJ energy in non-dimensionalized terms
     Inputs: r : float of representing distance between two particles
     """
-    return 4*(1/r**12 - 1/r**6)
+    return 4*(1/r**12 - 1/r**6) - (4*(1/cutoff**12 - 1/cutoff**6)) + (r-cutoff)*(48/cutoff**13 - 24/cutoff**7)
 
 @numba.njit(parallel=True)
-def nrg(x, cutoff=2.5,L=6.8, Sum=0):
+def nrg(x, cutoff=2.5,L=6.8):
     """
     Returns forces for a provided position vector 
     Input: X : Nx3 nd.array of cartersian coordinates
     Output: Energy of total system 
     """
-
+    Sum = 0
      # Total potential energy remains a scalar 
-    for i in numba.prange(len(x)-1):
+    for i in numba.prange(0,len(x)-1):
         for j in range(i+1,len(x)):
             # Iterate over two distinct particles at a time
                 # Difference in the X,Y,Z coordinates
             diff = x[i] - x[j]
             diff = periodic_boundary(diff)
-            distance = np.sqrt(diff[0]**2+diff[1]**2+diff[2]**2)
+            distance = norm(diff)
             if (distance < cutoff):
                 # # Add to total potential, current particle pair's energy contribution
-                Sum+=LJ(distance)+4*(1/cutoff**12-1/cutoff**6)
-            # Sum+=LJ(distance)
+                # Sum+=LJ(distance)+4*(1/cutoff**12-1/cutoff**6)
+                Sum+=LJ(distance)
             else:
                 Sum += 0
 
@@ -147,7 +160,11 @@ def Temperature_calculate(K_eng, x):
 # load the initial position. Replace '10.txt' with a similar file to redo calculations for a different system
 # @numba.njit
 def main():
+
     cutoff = 2.5
+    U_cutoff =  4*(1/cutoff**13 -24/cutoff**7)
+    F_cutoff = -(48 / cutoff**13 - 24/cutoff**7)
+    
     filename = 'liquid256.txt'
     curr_pos = np2.loadtxt(filename)
     K = np.array([])
@@ -173,11 +190,11 @@ def main():
     
     # simulation time settings
     t_min = 0
-    t_max = 15
-    t_int = 0.002
+    t_max = 5
+    t_int = 0.02
     t_range = np.arange(t_min,t_max,t_int)
     mass = 1
-    
+    #%%
     momentum = np.array([np.sum(curr_v,axis=0)])
     
     total_string = '' # Initialize a single string to hold all the written positions to be written in a file
